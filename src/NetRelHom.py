@@ -115,6 +115,54 @@ class FeedforwardNetwork(nn.Module):
                     nn.init.orthogonal_(layer.weight)
                 else:
                     break
+
+class UnionFind:
+    def __init__(self):
+        self.parent = {}
+        self. rank = {}
+    
+    def find(self, x):
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+    
+    def union(self, x, y):
+        root_x = self.find(x)
+        root_y = self.find(y)
+        
+        if root_x != root_y:
+            if self.rank[root_x] > self.rank[root_y]:
+                self.parent[root_y] = root_x
+            elif self.rank[root_x] < self.rank[root_y]:
+                self.parent[root_x] = root_y
+            else:
+                self.parent[root_y] = root_x
+                self.rank[root_x] += 1
+                
+    def add(self, x):
+        if x not in self.parent:
+            self.parent[x] = x
+            self.rank[x] = 0
+    
+    def merge_lists(self, lists):
+        for lst in lists:
+            if lst:
+                first_element = lst[0]
+                self.add(first_element)
+                
+            for elem in lst[1:]:
+                self.add(elem)
+                self.union(first_element, elem)
+        components = {}
+        for lst in lists:
+            for elem in lst:
+                root = self.find(elem)
+                if root not in components:
+                    components[root] = set()
+                components[root].update(lst)
+
+        return [list(comp) for comp in components.values()]
+                    
                 
 class SimpComp:
     def __init__(self, method='Rips', threshold = 4, dim=2):
@@ -132,6 +180,7 @@ class SimpComp:
         elif self.method=='Tangential':
             tangential_complex = gudhi.TangentialComplex(self.threshold,points=point_cloud)
             simplex_tree = tangential_complex.create_simplex_tree()
+        self.skeleton = self.get_skeleton(simplex_tree)
         return simplex_tree
     
     def get_skeleton(self, simplicial_complex):
@@ -141,25 +190,22 @@ class SimpComp:
             skeletons[len(simplex[0])-1].append(simplex[0])
         return skeletons
     
-    def get_boundary_matrices(self, simplicial_complex):
-        skeletons = self.get_skeleton(simplicial_complex)
-        
+    def get_boundary_matrices(self, simplicial_complex):        
         boundary_matrices = {k: [] for k in range(self.dim)}
-        boundary_matrices[0] = np.ones([1,len(skeletons[0])])
+        boundary_matrices[0] = np.ones([1,len(self.skeleton[0])])
     
         for k in range(self.dim):
-            boundary_matrices[k+1] = np.zeros([len(skeletons[k]),len(skeletons[k+1])])
-            for n,simp in enumerate(skeletons[k+1]):
-                faces = [set(b) <= set(simp) for b in skeletons[k]]
+            boundary_matrices[k+1] = np.zeros([len(self.skeleton[k]),len(self.skeleton[k+1])])
+            for n,simp in enumerate(self.skeleton[k+1]):
+                faces = [set(b) <= set(simp) for b in self.skeleton[k]]
                 boundary_matrices[k+1][faces,n] = 1
-        #boundary_matrices[self.dim+1] = np.ones([1,len(skeletons[0])])
+        #boundary_matrices[self.dim+1] = np.ones([1,len(self.skeleton[0])])
         return boundary_matrices
     
     def get_subcomplex(self, simplicial_complex, subvertex_set):
-        skeletons = self.get_skeleton(simplicial_complex)
         subcomplex = []
-        for k in range(len(skeletons)):
-            for simplex in skeletons[k]:
+        for k in range(len(self.skeleton)):
+            for simplex in self.skeleton[k]:
                 if set(simplex) <= set(subvertex_set):
                     subcomplex.append(simplex)
         return subcomplex
@@ -198,6 +244,7 @@ class MapHomology:
         self.gluing_threshold = gluing_threshold
         self.neural_model = neural_model
         self.current_step = 0
+        self.uf = UnionFind()
         
     def neural_net_to_map_step(self, x):
         #Requires a torch model with all the layers stored in a ModuleList
@@ -218,6 +265,8 @@ class MapHomology:
         d = cdist(x, x)
         np.fill_diagonal(d,np.nan)
         contract_mask = np.argwhere(d<self.gluing_threshold)
+        contract_mask = [[contract_mask[i,0], contract_mask[i,1]] for i in range(len(contract_mask))]
+        contract_mask = self.uf.merge_lists(contract_mask)
         return contract_mask
     
     def map_homology_sequence(self, n_iterations=1):
@@ -228,25 +277,24 @@ class MapHomology:
             x = self.step_map(x).detach()
             gluing_regions = self.decide_gluing(x)
             relative_hom = self.SComplexAnalyzer.homology_pointcloud(self.input_space,gluing_regions)
-            map_homology.append(relative_hom)
+            map_homology.append(relative_hom[:self.SComplexAnalyzer.dim])
             f_x_iterations.append(x)
         return map_homology, f_x_iterations
         
 
-res = 25
-x = np.linspace(-1, 1, res)
-y = np.linspace(-1, 1, res)
+res = 400
+x = np.linspace(-2, 2, res)
+y = np.linspace(-2, 2, res)
 neighbor_scale = (max(x)-min(x))/(res-2)
 neighbor_scale = np.sqrt(2*(neighbor_scale**2))
 xx, yy = np.meshgrid(x, y)
 pcloud = np.column_stack((xx.ravel(), yy.ravel()))
-# pcloud = np.vstack([np.cos(np.linspace(-np.pi,np.pi,res)),np.sin(np.linspace(-np.pi,np.pi,res))]).T
+pcloud = np.vstack([np.cos(np.linspace(-np.pi,np.pi,res)),np.sin(np.linspace(-np.pi,np.pi,res))]).T
 # pcloud=np.random.randn(25,2).T
 
-sc = SimpComp(threshold=neighbor_scale,dim=3,method='Rips')
+sc = SimpComp(threshold=0.5,dim=3,method='Rips')
 tree = sc.assign_complex(pcloud)
 
-mats = sc.get_boundary_matrices(tree)
 # hom = sc.compute_homology(tree,subcomplex_list=[])
 # print(hom)
 
@@ -277,14 +325,14 @@ def backers_map(x):
     y_ = np.concatenate([x_1[:,1]/2, 1 - x_1[:,1]/2])
     return np.vstack([x_,y_]).T
 
-model = FeedforwardNetwork(2,[10,3,3,3,3],out_layer_sz=2, init_type='None')
+model = FeedforwardNetwork(2,[2,10,10,2],out_layer_sz=2, init_type='none')
 
-map_homology, fs = MapHomology(model, pcloud, scomplex_analyzer=sc, gluing_threshold=1e-16, neural_model=model).map_homology_sequence(6)
+map_homology, fs = MapHomology(model, pcloud, scomplex_analyzer=sc, gluing_threshold=1e-12, neural_model=model).map_homology_sequence(5)
 print(map_homology)
 
 map_diagram = np.vstack(map_homology)
 
 import matplotlib.pyplot as plt
 
-plt.scatter(fs[-1][:,0], fs[-1][:,1],s=1)
+[plt.scatter(fs[i][:,0], fs[-i][:,1],s=1) for i in range(len(fs))]
 
