@@ -8,7 +8,11 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import Isomap
 from scipy.spatial import KDTree
 from scipy.stats import percentileofscore
+from scipy.optimize import linprog
 import polytope as pc
+import cdd
+from itertools import product
+from tqdm.auto import tqdm
 
 
 class FeedforwardNetwork(nn.Module):
@@ -40,14 +44,22 @@ class FeedforwardNetwork(nn.Module):
         # Initialize weights
         self.initialize_weights(mean, std)
 
-    def forward(self, x):
+    def forward(self, x, pre=False):
         layerwise_activations = []
         for layer in self.layers:
-            if isinstance(layer, self.activation):
-                x = layer(x)
-                layerwise_activations.append(torch.flatten(x.clone(),1))
+            if pre:
+                if isinstance(layer, nn.Linear):
+                    x = layer(x)
+                    layerwise_activations.append(torch.flatten(x.clone(),1))
+                else:
+                    x = layer(x)
+
             else:
-                x = layer(x)
+                if isinstance(layer, self.activation):
+                    x = layer(x)
+                    layerwise_activations.append(torch.flatten(x.clone(),1))
+                else:
+                    x = layer(x)
         if self.out_layer_sz>0:
             layerwise_activations.append(x)
         return layerwise_activations
@@ -66,53 +78,6 @@ class FeedforwardNetwork(nn.Module):
                     nn.init.orthogonal_(layer.weight)
                 else:
                     break
-
-class UnionFind:
-    def __init__(self):
-        self.parent = {}
-        self. rank = {}
-    
-    def find(self, x):
-        if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])
-        return self.parent[x]
-    
-    def union(self, x, y):
-        root_x = self.find(x)
-        root_y = self.find(y)
-        
-        if root_x != root_y:
-            if self.rank[root_x] > self.rank[root_y]:
-                self.parent[root_y] = root_x
-            elif self.rank[root_x] < self.rank[root_y]:
-                self.parent[root_x] = root_y
-            else:
-                self.parent[root_y] = root_x
-                self.rank[root_x] += 1
-                
-    def add(self, x):
-        if x not in self.parent:
-            self.parent[x] = x
-            self.rank[x] = 0
-    
-    def merge_lists(self, lists):
-        for lst in lists:
-            if lst:
-                first_element = lst[0]
-                self.add(first_element)
-                
-            for elem in lst[1:]:
-                self.add(elem)
-                self.union(first_element, elem)
-        components = {}
-        for lst in lists:
-            for elem in lst:
-                root = self.find(elem)
-                if root not in components:
-                    components[root] = set()
-                components[root].update(lst)
-
-        return [list(comp) for comp in components.values()]
                     
                 
 class SimpComp:
@@ -187,7 +152,50 @@ class SimpComp:
                 plt.scatter(pcloud[vertex_set,0],pcloud[vertex_set,1],c=np.ones(len(vertex_set))*(i/len(subcomplex_list)),cmap='Pastel1', vmin=0,vmax=1,s=20,zorder=1000)
                 plt.plot(pcloud[vertex_set,0],pcloud[vertex_set,1],'k-') 
                 
-                
+
+def union_find(connections):
+    def find(x, parent):
+        # Path compression
+        if parent[x] != x:
+            parent[x] = find(parent[x], parent)
+        return parent[x]
+
+    def union(x, y, parent, rank):
+        # Union by rank
+        root_x = find(x, parent)
+        root_y = find(y, parent)
+
+        if root_x != root_y:
+            if rank[root_x] > rank[root_y]:
+                parent[root_y] = root_x
+            elif rank[root_x] < rank[root_y]:
+                parent[root_x] = root_y
+            else:
+                parent[root_y] = root_x
+                rank[root_x] += 1
+
+    # Get all unique elements
+    elements = set(x for sublist in connections for x in sublist)
+
+    # Initialize parent and rank dictionaries
+    parent = {x: x for x in elements}
+    rank = {x: 0 for x in elements}
+
+    # Apply union operations for all connections
+    for a, b in connections:
+        union(a, b, parent, rank)
+
+    # Group connected components
+    groups = {}
+    for element in elements:
+        root = find(element, parent)
+        if root not in groups:
+            groups[root] = []
+        groups[root].append(element)
+
+    return list(groups.values())
+
+
 class NetworkDecompositions:
     def __init__(self, model):
         self.model = model
@@ -196,14 +204,16 @@ class NetworkDecompositions:
         #decompositoins
         self.global_decomposition = []
         self.local_decomposition = []
-        self.overlap_decomopsition = []
+        self.overlap_decomposition = []
         self.rank_decomposition = []
+        self.polyhedral_decomposition = []
+        self.union_find = union_find
         
-        self.uf = UnionFind()
 
         
     def get_map_at_point(self,x, layer_num):
         bias = 0
+        layer_n = 0
         for n, layer in enumerate(self.layers):
             x = layer(x.flatten())
             if isinstance(layer, nn.Linear):
@@ -212,34 +222,41 @@ class NetworkDecompositions:
                 if n==0:
                     out_mat = Q@layer.weight
                     bias = Q@layer.bias
+                elif n==len(self.layers)-1:
+                    out_mat = layer.weight@out_mat
+                    bias = layer.weight@bias + layer.bias
                 else:
                     out_mat = Q@layer.weight@out_mat
                     bias = Q@layer.weight@bias + Q@layer.bias
-                if n//2==layer_num:
+                if layer_n==layer_num:
                     return out_mat, bias
+                layer_n += 1
         return out_mat, bias
     
     def get_premap_at_point(self, x, layer_num):
         bias = 0
+        layer_n = 0
         for n, layer in enumerate(self.layers):
             x = layer(x.flatten())
             if isinstance(layer, nn.Linear):
                 out_sign = (x>0).float()
                 Q = (torch.eye(layer.weight.shape[0])*out_sign)
                 if n==0:
-                    out_mat = Q@layer.weight
-                    bias = Q@layer.bias
                     if n==layer_num:
                         out_sign[out_sign==0] = -1
                         Q = (torch.eye(layer.weight.shape[0])*out_sign)
                         return layer.weight, layer.bias, Q
-                elif n//2==layer_num:
+                    out_mat = Q@layer.weight
+                    bias = Q@layer.bias
+
+                elif layer_n==layer_num:
                     out_sign[out_sign==0] = -1
                     Q = (torch.eye(layer.weight.shape[0])*out_sign)
-                    return layer.weight, layer.bias, Q
+                    return layer.weight@out_mat, layer.weight@bias + layer.bias, Q
                 else:
                     out_mat = Q@layer.weight@out_mat
                     bias = Q@layer.weight@bias + Q@layer.bias
+                layer_n += 1
         return out_mat, bias
 
         
@@ -331,112 +348,248 @@ class NetworkDecompositions:
             self.local_decomposition = [eq_classes, final_codewords]
         return eq_classes, final_codewords
     
-    def weights_to_polyhedra(self, X, layer=-1,bbox=[-1,1]):
-        if len(self.global_decomposition)==0:
+    def init_bbox(self,bbox=[-10,10]):
+        bbox_matrix = np.vstack([-np.eye(self.model.input_size),np.eye(self.model.input_size)])
+        bbox_bias_lower = -np.array([[bbox[0]]*self.model.input_size])
+        bbox_bias_upper = np.array([[bbox[1]]*self.model.input_size])
+        bbox_bias = np.hstack([bbox_bias_lower,bbox_bias_upper])[0]
+        return bbox_matrix, bbox_bias
+    
+    def weights_to_inpolyhedra(self, X, layer=-1,bbox=[-100,100],recomp_global_decomp = False):
+        if len(self.global_decomposition)==0 or recomp_global_decomp:
             global_classes = self.compute_codeword_eq_classes(X)[0]
         else:
             global_classes = self.global_decomposition[0]
-        polyhedra = []
-        if layer==0:
-            bbox_matrix = np.vstack([np.eye(self.model.input_size),-np.eye(self.model.input_size)])
-            bbox_bias_lower = -np.array([[bbox[0]]*self.model.input_size])
-            bbox_bias_upper = np.array([[bbox[1]]*self.model.input_size])
-            bbox_bias = np.hstack([bbox_bias_lower,bbox_bias_upper])[0]
-            for curr_cls in global_classes[layer]:
-                T_ck, B_ck, J_ck = self.get_premap_at_point(X[curr_cls[0]], layer)
-                T_ck = np.vstack([(J_ck@T_ck).detach().numpy(),bbox_matrix])
-                B_ck = np.concatenate([(J_ck@B_ck).detach().numpy(),bbox_bias])
-                polyhedra.append(pc.reduce(pc.Polytope(T_ck, B_ck)))
-        else:                
-            bbox_matrix = np.vstack([np.eye(self.model.hidden_sizes[layer]),-np.eye(self.model.hidden_sizes[layer])])
-            bbox_bias_lower = -np.array([[bbox[0]]*self.model.hidden_sizes[layer]])
-            bbox_bias_upper = np.array([[bbox[1]]*self.model.hidden_sizes[layer]])
-            bbox_bias = np.hstack([bbox_bias_lower,bbox_bias_upper])[0]            
-            for prev_cls in global_classes[layer-1]:
-                for curr_cls in global_classes[layer]:
-                    if set(curr_cls) <= set(prev_cls):
-                        #define the weight operator at the current and previous layers
-                        T_ck, B_ck, J_ck = self.get_premap_at_point(X[curr_cls[0]], layer)
-                        T_prev, B_prev = self.get_map_at_point(X[prev_cls[0]], layer-1)
-                        T_dagger = torch.linalg.pinv(T_prev)
-                        eq_system_W = np.vstack([(T_prev@T_dagger).detach().numpy(),
-                                                  (J_ck@T_ck@T_prev@T_dagger).detach().numpy(),
-                                                  bbox_matrix])
-                        eq_system_b = np.concatenate([(-T_prev@T_dagger@B_prev).detach().numpy(),
-                                                    (-J_ck@T_ck@T_prev@T_dagger@B_prev).detach().numpy()+(J_ck@B_ck).detach().numpy(),
-                                                     bbox_bias])
-                        polyhedra.append(pc.reduce(pc.Polytope(eq_system_W, eq_system_b)))
-        return polyhedra
+        polyhedra = [[] for i in range(layer+1)]
+        maps = [[] for i in range(layer+1)]
+        bbox_matrix, bbox_bias = self.init_bbox(bbox)
         
+        for l in range(layer+1):
+            if l==0:
+                for curr_cls in global_classes[0]:
+                    T_ck, B_ck, J_ck = self.get_premap_at_point(X[curr_cls[0]], l)
+                    eq_system_W = np.vstack([-(J_ck@T_ck).detach().numpy(),bbox_matrix])
+                    eq_system_b = np.concatenate([(J_ck@B_ck).detach().numpy(),bbox_bias])
+                    phedra = pc.reduce(pc.Polytope(eq_system_W, eq_system_b))
+                    polyhedra[0].append(phedra)
+            else:
+                for curr_cls in global_classes[l]:
+                    T_new, B_new, J_new = self.get_premap_at_point(X[curr_cls[0]], l)
+                    parent_region = np.where([set(curr_cls) <= set(prev_class) for prev_class in global_classes[l-1]])[0].item()
+                    eq_system_W = np.vstack([-(J_new@T_new).detach().numpy(),bbox_matrix])
+                    eq_system_b = np.concatenate([(J_new@B_new).detach().numpy(),bbox_bias])
+                    phedra2 = pc.Polytope(eq_system_W, eq_system_b)
+                    phedra = pc.reduce(polyhedra[l-1][parent_region].intersect(phedra2))
+                    polyhedra[l].append(phedra)
+        return polyhedra
     
+    
+    def h_rep_at_point(self,x,layer,bbox=[-100,100]):
+        bbox_matrix, bbox_bias = self.init_bbox(bbox)
+
+        for l in range(layer+1):
+            if l==0:
+                T_ck, B_ck, J_ck = self.get_premap_at_point(x, l)
+                eq_system_W = np.vstack([-(J_ck@T_ck).detach().numpy(),bbox_matrix])
+                eq_system_b = np.concatenate([(J_ck@B_ck).detach().numpy(),bbox_bias])
+                phedra = pc.reduce(pc.Polytope(eq_system_W, eq_system_b))
+            else:
+                T_new, B_new, J_new = self.get_premap_at_point(x, l)
+                eq_system_W = np.vstack([-(J_new@T_new).detach().numpy(),bbox_matrix])
+                eq_system_b = np.concatenate([(J_new@B_new).detach().numpy(),bbox_bias])
+                phedra2 = pc.Polytope(eq_system_W, eq_system_b)
+                phedra = pc.reduce(phedra.intersect(phedra2))
+        return phedra.A, phedra.b
+    
+    def populate_polyhedra(self,H_rep, n_samples = 100):
+        min_coords = []
+        max_coords = []
+        for i in range(H_rep[0].shape[1]):
+            c = np.zeros(H_rep[0].shape[1])
+            c[i] = -1  # Minimize this coordinate
+            res_min = linprog(c, A_ub=H_rep[0], b_ub=H_rep[1], method='highs',bounds=(None,None))
+            c[i] = 1   # Maximize this coordinate
+            res_max = linprog(c, A_ub=H_rep[0], b_ub=H_rep[1], method='highs',bounds=(None,None))
+            
+            min_coords.append(res_min.x[i])
+            max_coords.append(res_max.x[i])
+
+        samples = []
+
+        while len(samples) < n_samples:
+            # Generate random point in bounding box
+            point = np.array([
+                np.random.uniform(min_coords[j], max_coords[j]) 
+                for j in range(len(min_coords))
+            ])
+            if np.all(H_rep[0] @ point <= H_rep[1]):
+                samples.append(point)
+        return np.array(samples).squeeze()
+
+    
+    def weights_to_all_polyhedra(self, X, layer, bbox=[-100,100]):
+        #Only use this for very small networks as it uses up to 2^{\sum{n_i}} permutations, with n_i being the width of layer i. 
+        bbox_matrix, bbox_bias = self.init_bbox(bbox)
+        box_region = pc.Region([pc.Polytope(bbox_matrix,bbox_bias)])
+        polyhedra = self.weights_to_inpolyhedra(X,layer, bbox)
+        for l in range(layer+1):
+            test_region = pc.Region(polyhedra[l])
+            complement = box_region-test_region
+            if isinstance(complement,pc.Polytope):
+                complement = pc.Region([complement])
+            while complement.volume!=0:
+                for pol in complement:                    
+                    X_new = torch.Tensor(self.populate_polyhedra((pol.A,pol.b), n_samples=10))
+                    polyhedra[l].extend(self.weights_to_inpolyhedra(X_new,l, bbox, recomp_global_decomp=True)[l])
+                test_region = pc.Region(polyhedra[l])
+                complement = box_region-test_region 
+                if isinstance(complement,pc.Polytope):
+                    complement = pc.Region([complement])
+        return polyhedra
+    
+    def all_polyhedra_approx(self, polyh_data, bbox=[-10,10]):
+        bbox_matrix, bbox_bias = self.init_bbox(bbox)
+        box_reg = pc.Region([pc.Polytope(bbox_matrix,bbox_bias)])
+        complement = pc.separate(box_reg - polyh_data)
+        full_decomp = [*complement, *polyh_data]
+        return full_decomp
+    
+    def dmat_gdecomp(self, X, layer):
+        global_classes = self.global_decomposition[0][layer]
+        outs = self.model(X)[layer].detach().numpy()
+        d = np.zeros([len(global_classes),len(global_classes)])
+        for n in range(len(global_classes)):
+            for m in range(len(global_classes)):
+                if n>m:
+                    d[n,m] = np.min(cdist(outs[global_classes[n]], 
+                                          outs[global_classes[m]]))
+        return d+d.T
+        
     def find_overlapping_eq_classes(self, X, layer=-1, sensitivity=1e-6):
-        if len(self.local_decomposition)==0:
-            local_classes = self.compute_codeword_eq_classes(X,mode='local')[0][layer]
-        else:
-            local_classes = self.local_decomposition[0][layer]
+        # if len(self.local_decomposition)==0:
+        #     local_classes = self.compute_codeword_eq_classes(X,mode='local')[0][layer]
+        # else:
+        #     local_classes = self.local_decomposition[0][layer]
         if len(self.global_decomposition)==0:
             global_classes = self.compute_codeword_eq_classes(X)[0][layer]
         else:
             global_classes = self.global_decomposition[0][layer]
+            
+        if len(self.polyhedral_decomposition)==0:
+            self.polyhedral_decomposition = self.weights_to_inpolyhedra(X,layer = len(self.model.hidden_sizes))
         all_classes = []
         contractible_classes = []
+        d_indexing = self.dmat_gdecomp(X, layer)
         for n, class_n in enumerate(global_classes):#class_partitions[i]):
             all_classes.append(list(class_n))
-            glob_in_loc_A = np.where([set(class_n) <= set(loc_class) for loc_class in local_classes])[0]
+            # glob_in_loc_A = np.where([set(class_n) <= set(loc_class) for loc_class in local_classes])[0]
             for m, class_m in enumerate(global_classes):#class_partitions[i]):
-                glob_in_loc_B = np.where([set(class_m) <= set(loc_class) for loc_class in local_classes])[0]             
-                if n>=m and glob_in_loc_A==glob_in_loc_B:
-                    intersect = self.find_intersection(X[class_n],X[class_m],layer,epsilon=sensitivity)
-                    overlap_class = [[class_n[intersect[i,0]], class_m[intersect[i,1]]] for i in range(len(intersect))]
+                # glob_in_loc_B = np.where([set(class_m) <= set(loc_class) for loc_class in local_classes])[0]             
+                if n>m and d_indexing[n,m]<sensitivity:#glob_in_loc_A==glob_in_loc_B:
+                    intersect = self.find_intersection(X[class_n],X[class_m],n,m,layer)
+                    overlap_class = [[class_n[intersect[i,1]], class_m[intersect[i,0]]] for i in range(len(intersect))]
                     all_classes.extend(overlap_class)
                     contractible_classes.extend(overlap_class)
-        return self.uf.merge_lists(contractible_classes), self.uf.merge_lists(all_classes)
+        print('Done with layer '+str(layer))
+        return self.union_find(contractible_classes), all_classes
     
-    def find_intersection(self,C1,C2,layer=-1,epsilon=1e-6):
+    def find_intersection(self,C1,C2,n,m,layer=-1):
         A1,b1 = self.get_map_at_point(C1[0], layer)
         A2,b2 = self.get_map_at_point(C2[0], layer)
-        if torch.all(A1==A2) and torch.all(b1==b2) and torch.linalg.matrix_rank(A1).item()==0:
-            epsilon= 1e16
-        # epsilon = (epsilon*max(max(torch.linalg.svd(A1.T)[1]),max(torch.linalg.svd(A2.T)[1]))).item()
-        F1 = self.model(C1)[layer].detach()
-        F2 = self.model(C2)[layer].detach()
         
-        contraction_factor1 = np.nanmean(cdist(F1,F1)/cdist(C1,C1))
-        contraction_factor2 = np.nanmean(cdist(F2,F2)/cdist(C2,C2))
-        coef = np.nanmin(np.stack([contraction_factor1, contraction_factor2]))
-        if ~np.isnan(coef):
-            epsilon = epsilon*coef
-        # d_2 = cdist(F2,F2)
-        # d_in = cdist(C1,C2)
-        d_out  = cdist(F1,F2)
-        # d = d_out/d_in
-        # contract_mask = np.argwhere((d_out)<=epsilon)
-        # if torch.all(A1==A2) and torch.all(b1==b2):
-        #     return np.argwhere(d_out==0)
+        H1 = (self.polyhedral_decomposition[layer][n].A, self.polyhedral_decomposition[layer][n].b)#self.h_rep_at_point(C1[0], layer)
+        H2 = (self.polyhedral_decomposition[layer][m].A, self.polyhedral_decomposition[layer][m].b)#self.h_rep_at_point(C2[0], layer)
+
+        contract_mask = [[],[]]
         
-        # kdtree_C1 = KDTree(F1)
-        # kdtree_C2 = KDTree(F2)
-        # d_1, _ = kdtree_C1.query(F1,k=2)
-        # d_2, _ = kdtree_C2.query(F2,k=2)
-        contract_mask = np.argwhere(d_out<=epsilon)#np.percentile(d_1[:,1],99))#(percentileofscore(d_1[:,1], d_out)/100)<1)#np.argwhere(d_out.T<=d_1[:,1])#
-        contract_mask = contract_mask[contract_mask[:,0]!=contract_mask[:,1]]
-        # contract_mask = np.vstack([contract_mask[:,1],contract_mask[:,0]]).T
-        # contract_mask = np.vstack([contract_mask,np.argwhere(d_out<=d_2[:,1])])#
+        bounds = [(None, None) for _ in range(self.model.input_size)] + [(0, 0)]
+        c = np.zeros(self.model.input_size+1)
+        c[-1] = 1
+        H_constraint = np.hstack([H1[0], -np.ones([H1[0].shape[0],1])])
+        H_eq = np.zeros([A1.shape[0], self.model.input_size+1])
+        H_eq[:,:self.model.input_size] = A1.detach().numpy()
+        for n, x in enumerate(C2): #check if points in C2 are in the image of A1
+            y = A2@x+b2
+            A1_intersect = linprog(
+                c = c,
+                A_ub = H_constraint,
+                b_ub = H1[1],
+                A_eq = H_eq,
+                b_eq = (y-b1).detach().numpy(),
+                method='highs',
+                bounds=bounds)
+            if A1_intersect.success:
+                transformed_x = (A1@torch.Tensor(A1_intersect.x[:-1])+b1[None])[0]
+                is_member = (torch.allclose(transformed_x, y, atol=0) and
+                             np.all(H1[0]@A1_intersect.x[:-1]<=H1[1]+0))
+                if is_member:
+                    contract_mask[0].append(n)
+                    
+        H_constraint = np.hstack([H2[0], -np.ones([H2[0].shape[0],1])])
+        H_eq = np.zeros([A2.shape[0], self.model.input_size+1])
+        H_eq[:,:self.model.input_size] = A2.detach().numpy()
+        for n, x in enumerate(C1): #check if points in C1 are in the image of A2
+            y = A1@x+b1
+            A2_intersect = linprog(
+                c = c,
+                A_ub = H_constraint,
+                b_ub = H2[1],
+                A_eq = H_eq,
+                b_eq = (y-b2).detach().numpy(),
+                method='highs',
+                bounds=bounds)
+            if A2_intersect.success:
+                transformed_x = (A2@torch.Tensor(A2_intersect.x[:-1])+b2[None])[0]
+                is_member = (torch.allclose(transformed_x, y, atol=0) and
+                             np.all(H2[0]@A2_intersect.x[:-1]<=H2[1]+0))            
+                if is_member:
+                    contract_mask[1].append(n)
+                    
+        if len(contract_mask[0])>0 and len(contract_mask[1])>0:
+            contract_mask = [[i,j] for i in contract_mask[0] for j in contract_mask[1]]
+        else:
+            contract_mask = []
+        # ptope1 = pc.Polytope(H1[0],H1[1])
+        # ptope2 = pc.Polytope(H2[0],H2[1])
+        # C1_new = torch.Tensor(self.populate_polyhedra(H1,n_samples=1000))#[:,None]
+        # C2_new = torch.Tensor(self.populate_polyhedra(H2,n_samples=1000))#[:,None]
+        
+        # # plt.plot(C1_new,0*C1_new,'.')
+        # # plt.plot(C2_new,0*C2_new,'.')
+        # region = pc.Region([ptope1,ptope2])
+        # region.plot()
+        # plt.plot(C1_new[:,0],C1_new[:,1],'.')
+        # plt.plot(C2_new[:,0],C2_new[:,1],'.')
+        # plt.plot(C1[:,0],C1[:,1],'b.')
+        # plt.plot(C2[:,0],C2[:,1],'r.')
 
-        return contract_mask
+        # plt.plot([A1_intersect.x[:-1][0]],[A1_intersect.x[:-1][1]],'b.')
+        # # plt.plot([A2_intersect.x[:-1][0]],[A2_intersect.x[:-1][1]],'r.')
+        # T1 = (A1@C1.T+b1[:,None]).detach().numpy().T
+        # T2 = (A2@C2.T+b2[:,None]).detach().numpy().T
+        # T1_model = self.model(C1)[layer].detach().numpy()#(A1@C1.T+b1[:,None]).detach().numpy().T
+        # T2_model = self.model(C2)[layer].detach().numpy()#(A2@C2.T+b2[:,None]).detach().numpy().T
+        # plt.figure()
+        # plt.plot(T1[:,0],T1[:,1],'.')
+        # plt.plot(T2[:,0],T2[:,1],'.')
+        # plt.plot(T1_model[:,0],T1_model[:,1],'.')
+        # plt.plot(T2_model[:,0],T2_model[:,1],'.')    
+        return np.array(contract_mask)
 
-    def compute_overlap_decomp(self,X,sensitivity = 1e-6):
+
+    def compute_overlap_decomp(self,X,sensitivity = 1):
         overlap_decomps = []
         for n in range(len(self.model.hidden_sizes)+1):
             overlap_decomps.append(self.find_overlapping_eq_classes(X,layer=n, sensitivity=sensitivity)[0])
-        self.overlap_decomopsition = overlap_decomps
+        self.overlap_decomposition = overlap_decomps
         return overlap_decomps
 
-    def compute_all_decomps(self, X, sensitivity = 1e-6):
+    def compute_all_decomps(self, X, sensitivity = 1):
         self.local_decomposition = self.compute_codeword_eq_classes(X,mode='local')
         self.global_decomposition = self.compute_codeword_eq_classes(X,mode='global')
         self.rank_decomposition = self.compute_rank_classes(X)
         self.overlap_decomposition = self.compute_overlap_decomp(X, sensitivity=sensitivity)
+        self.polyhedral_decomposition = self.weights_to_inpolyhedra(X,layer = len(self.model.hidden_sizes))
 
         
 class MapHomology:
@@ -454,7 +607,7 @@ class MapHomology:
         self.neural_model = neural_model
         self.current_step = 0
         self.decomps = None
-        self.uf = UnionFind()
+        self.union_find = union_find
         
     def neural_net_to_map_step(self, x):
         #Requires a torch model with all the layers stored in a ModuleList
@@ -482,7 +635,7 @@ class MapHomology:
             np.fill_diagonal(d,np.nan)
             contract_mask = np.argwhere(d<self.gluing_threshold)
             contract_mask = [[contract_mask[i,0], contract_mask[i,1]] for i in range(len(contract_mask))]
-            contract_mask = self.uf.merge_lists(contract_mask)
+            contract_mask = self.union_find(contract_mask)
         else:
             contract_mask = self.overlaps[self.current_step//2]
         return contract_mask
@@ -502,116 +655,140 @@ class MapHomology:
         return map_homology, f_x_iterations, ovrlap_complexes
         
 #%%
-res = 32
-x = np.linspace(-3, 3, res)
-y = np.linspace(-3, 3, res)
-neighbor_scale = (max(x)-min(x))/(res-1)
-neighbor_scale = np.sqrt(2*(neighbor_scale**2))+1e-1
-xx, yy = np.meshgrid(x, y )
-pcloud = np.column_stack((xx.ravel(), yy.ravel()))
-# pcloud = 2*(np.random.rand(res,3)-0.5)
-# pcloud = np.vstack([np.cos(np.linspace(-np.pi,np.pi,res,endpoint=False)),np.sin(np.linspace(-np.pi,np.pi,res,endpoint=False))]).T #+ 1
-# pcloud = pcloud + 0.005*np.random.randn(*pcloud.shape)
-# d = cdist(pcloud,pcloud)
-# neighbor_scale = 2*np.min(d[d>1e-12])+0.05
-# pcloud = np.linspace(0,1,res)[:,None]
-# pcloud=np.random.randn(25,2).T
+# res = 40
+# x = np.linspace(-3, 3, res)
+# y = np.linspace(-3, 3, res)
+# neighbor_scale = (max(x)-min(x))/(res-1)
+# neighbor_scale = np.sqrt(2*(neighbor_scale**2))+1e-12
+# xx, yy = np.meshgrid(x, y )
+# pcloud = np.column_stack((xx.ravel(), yy.ravel()))
+# # pcloud = 2*(np.random.rand(res,3)-0.5)
+# # pcloud = np.vstack([np.cos(np.linspace(-np.pi,np.pi,res,endpoint=False)),np.sin(np.linspace(-np.pi,np.pi,res,endpoint=False))]).T #+ 1
+# # pcloud = pcloud + 0.005*np.random.randn(*pcloud.shape)
+# # d = cdist(pcloud,pcloud)
+# # neighbor_scale = 2*np.min(d[d>1e-12])+0.05
+# # pcloud = np.linspace(0,1,res)[:,None]
+# # pcloud=np.random.randn(25,2).T
 
-sc = SimpComp(threshold=neighbor_scale,dim=4,method='Rips')
-tree = sc.assign_complex(pcloud)
-sc.plot_simplicial_complex(pcloud,tree,[[0,2,32,71],[1,9]])
-#%%
-hidden_sizes = [2]*5
-model = FeedforwardNetwork(2,hidden_sizes,out_layer_sz=2, init_type='none', activation=nn.ReLU)
-decomps = NetworkDecompositions(model)
-decomps_1 = decomps.weights_to_polyhedra(torch.Tensor(pcloud),layer=0,bbox=[-5,5])
-decomps_2 = decomps.weights_to_polyhedra(torch.Tensor(pcloud),layer=1,bbox=[-5,5])
+# sc = SimpComp(threshold=neighbor_scale,dim=4,method='Rips')
+# tree = sc.assign_complex(pcloud)
+# # sc.plot_simplicial_complex(pcloud,tree,[[0,2,32,71],[1,9]])
+# #%%
+# hidden_sizes = [3]*3
+# model = FeedforwardNetwork(2,hidden_sizes,out_layer_sz=2, init_type='none', activation=nn.ReLU)
+# decomps = NetworkDecompositions(model)
+# all_phedra = decomps.weights_to_all_polyhedra(2)
+# phedra = decomps.weights_to_inpolyhedra(torch.Tensor(pcloud),layer=2,bbox=[-100,100])
+# polyhedra = decomps.weights_to_inpolyhedra(torch.Tensor(pcloud),layer=1,bbox=[-100,100])
 
-#%%
-# hom = sc.compute_homology(tree,subcomplex_list=[])
-# print(hom)
-import random
-seed = 420
+# #%%
+# for n in range(len(hidden_sizes)):
+#     region = pc.Region(all_phedra[n])
+#     region.plot()
+#     plt.xlim(-10,10)
+#     plt.ylim(-10,10)
+#     [plt.scatter(pcloud[clss,0],pcloud[clss,1]) for clss in decomps.global_decomposition[0][n]]
+# #%%
+# # hom = sc.compute_homology(tree,subcomplex_list=[])
+# # print(hom)
+# import random
+# seed = 15
 
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
+# random.seed(seed)
+# np.random.seed(seed)
+# torch.manual_seed(seed)
 
-def gingerbread_map(x):
-    x_ = 1-x[:,1]+np.abs(x[:,0])
-    y_ = x[:,0]
-    return np.vstack([x_,y_]).T
+# def gingerbread_map(x):
+#     x_ = 1-x[:,1]+np.abs(x[:,0])
+#     y_ = x[:,0]
+#     return np.vstack([x_,y_]).T
 
-def duffing_map(x): 
-    x_ = x[:,1]
-    y_ = -0.2*x[:,0]+2.75*x[:,1]-x[:,1]**3
-    return np.vstack([x_,y_]).T
+# def duffing_map(x): 
+#     x_ = x[:,1]
+#     y_ = -0.2*x[:,0]+2.75*x[:,1]-x[:,1]**3
+#     return np.vstack([x_,y_]).T
 
-def bogdanov_map(x, eps=0, k=1.2, mu=2):
-    y_ = x[:,1]+eps*x[:,1]+k*x[:,0]*(x[:,0]-1)+mu*x[:,0]*x[:,1]
-    x_ = x[:,0]+y_
-    return np.vstack([x_,y_]).T
+# def bogdanov_map(x, eps=0, k=1.2, mu=2):
+#     y_ = x[:,1]+eps*x[:,1]+k*x[:,0]*(x[:,0]-1)+mu*x[:,0]*x[:,1]
+#     x_ = x[:,0]+y_
+#     return np.vstack([x_,y_]).T
 
-def henon_map(x):
-    x_ = 1-1.4*x[:,0]**2+x[:,1]
-    y_ = 0.3*x[:,1]
-    return np.vstack([x_,y_]).T
+# def henon_map(x):
+#     x_ = 1-1.4*x[:,0]**2+x[:,1]
+#     y_ = 0.3*x[:,1]
+#     return np.vstack([x_,y_]).T
 
-def bakers_map(x):
-    x_1 = x[x[:,0]<0.5]
-    x_2 = x[x[:,0]>=0.5]
-    x_ = np.concatenate([2*x_1[:,0],2-2*x_2[:,0]])
-    y_ = np.concatenate([x_1[:,1]/2, 1 - x_1[:,1]/2])
-    return np.vstack([x_,y_]).T
+# def bakers_map(x):
+#     x_1 = x[x[:,0]<0.5]
+#     x_2 = x[x[:,0]>=0.5]
+#     x_ = np.concatenate([2*x_1[:,0],2-2*x_2[:,0]])
+#     y_ = np.concatenate([x_1[:,1]/2, 1 - x_1[:,1]/2])
+#     return np.vstack([x_,y_]).T
 
-def recurse_point(x):
-    return 1.8*(x-x**5)
+# def recurse_point(x):
+#     return 1.8*(x-x**5)
 
 
-hidden_sizes = [4]*5
-model = FeedforwardNetwork(2,hidden_sizes,out_layer_sz=2, init_type='unifrom', activation=nn.ReLU)
-# model = lambda x: torch.nn.RNN(2,2,1,nonlinearity='relu')(torch.Tensor(x))[0]
+# hidden_sizes = [3]*5
+# model = FeedforwardNetwork(2,hidden_sizes,out_layer_sz=2, init_type='none', activation=nn.ReLU)
+# # model = lambda x: torch.nn.RNN(2,2,1,nonlinearity='relu')(torch.Tensor(x))[0]
 
-P_ = torch.randn(hidden_sizes[0],hidden_sizes[0])
-E, V = torch.linalg.eig(P_)
-E = E/(abs(E).max())
-P = (V@torch.diag(E)@torch.linalg.pinv(V)).real
+# P_ = torch.randn(hidden_sizes[0],hidden_sizes[0])
+# E, V = torch.linalg.eig(P_)
+# E = E/(abs(E).max())
+# P = (V@torch.diag(E)@torch.linalg.pinv(V)).real
 
-for n, layer in enumerate(model.layers): #make all weight matrices the same for RNN condition
-    if isinstance(layer, nn.Linear) and n>2:
-        layer.weight = model.layers[2].weight#nn.Parameter(P)
-        layer.bias = model.layers[2].bias  
-#%%
-thresh = 0#neighbor_scale/50
-MPH =  MapHomology(model, pcloud, scomplex_analyzer=sc, gluing_threshold=thresh, neural_model=model)
-map_homology, fs, ovrlap_complex = MPH.map_homology_sequence(len(hidden_sizes))
-print(map_homology)
-get_all_decomps = MPH.decomps.compute_all_decomps(torch.Tensor(pcloud),sensitivity=thresh)
-# map_diagram = map_homology
-import matplotlib.pyplot as plt
+# for n, layer in enumerate(model.layers): #make all weight matrices the same for RNN condition
+#     if isinstance(layer, nn.Linear) and n>2:
+#         layer.weight = model.layers[2].weight#nn.Parameter(P)
+#         layer.bias = model.layers[2].bias  
+# #%%
+# thresh = 0#neighbor_scale/50
+# MPH =  MapHomology(model, pcloud, scomplex_analyzer=sc, gluing_threshold=thresh, neural_model=model)
+# map_homology, fs, ovrlap_complex = MPH.map_homology_sequence(len(hidden_sizes))
+# print(map_homology)
+# get_all_decomps = MPH.decomps.compute_all_decomps(torch.Tensor(pcloud),sensitivity=thresh)
+# # map_diagram = map_homology
+# import matplotlib.pyplot as plt
 
-# [plt.plot(fs[i],'.') for i in range(len(fs))]
-reduced_mfld = []
-reducer = Isomap(n_components=2)
-for i in range(len(fs)):
-    pcl = reducer.fit_transform(fs[i])
-    plt.scatter(pcl[:,0], pcl[:,1],s=1)   
-    reduced_mfld.append(pcl)     
+# # [plt.plot(fs[i],'.') for i in range(len(fs))]
+# reduced_mfld = []
+# reducer = Isomap(n_components=4)
+# for i in range(len(fs)):
+#     pcl = reducer.fit_transform(fs[i])
+#     plt.scatter(pcl[:,0], pcl[:,1],s=1)   
+#     reduced_mfld.append(pcl)     
 
-for i in range(len(ovrlap_complex)):
-    plt.figure()
-    # sc.plot_simplicial_complex(pcloud, tree, ovrlap_complex[i])
-    sc.plot_simplicial_complex(pcloud, tree, MPH.decomps.overlap_decomopsition[i],MPH.decomps.local_decomposition[0][i])
-    # sc.plot_simplicial_complex(reduced_mfld[i], tree, MPH.decomps.overlap_decomopsition[i],MPH.decomps.local_decomposition[0][i-1])
-# 
+# for i in range(len(ovrlap_complex)):
+#     plt.figure()
+#     # sc.plot_simplicial_complex(pcloud, tree, ovrlap_complex[i])
+#     # sc.plot_simplicial_complex(pcloud, tree, MPH.decomps.overlap_decomopsition[i],MPH.decomps.local_decomposition[0][i])
+#     sc.plot_simplicial_complex(reduced_mfld[i], tree, MPH.decomps.overlap_decomopsition[i],MPH.decomps.rank_decomposition[0][i-1])
+# # 
 
-    #%%
-import umap.umap_ as umap
-reducer = umap.UMAP(n_components=2, n_neighbors=4,min_dist=0, metric='precomputed')
-# reducer = Isomap(n_components=2, n_neighbors=2, metric='precomputed')
-# mfld = reducer.fit_transform(cdist(fs[-1],fs[-1])).T
-mfld = reducer.fit_transform(cdist(pcloud,pcloud)).T
-plt.scatter(mfld[0],mfld[1],c=np.linspace(0,1,res),s=1)
+# #%%
+# import umap.umap_ as umap
+# from scipy.sparse.csgraph import shortest_path, laplacian
+
+# l = -1
+# d = cdist(pcloud,pcloud).copy()
+# for decmp in MPH.decomps.overlap_decomposition[l]:
+#     d[np.ix_(decmp,decmp)] = 0
+# # d = shortest_path(d)
+# # reducer = umap.UMAP(n_components=3, n_neighbors=8,min_dist=1,metric='precomputed')
+# reducer = Isomap(n_components=3, n_neighbors=8, metric='precomputed')
+# mfld = reducer.fit_transform(d).T
+# # mfld = reducer.fit_transform(fs[l]).T#cdist(pcloud,pcloud)).T
+
+
+# from mpl_toolkits.mplot3d import Axes3D
+# fig = plt.figure()
+# ax = fig.add_subplot(111, projection='3d')
+
+# # Create the scatter plot
+# [ax.scatter(mfld[0,clss],mfld[1,clss],mfld[2,clss]) for clss in MPH.decomps.global_decomposition[0][l]]
+# [ax.scatter(mfld[0,clss],mfld[1,clss],mfld[2,clss],c='k') for clss in MPH.decomps.overlap_decomposition[l]]
+
 
 
 
