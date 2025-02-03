@@ -153,7 +153,7 @@ class SimpComp:
                 plt.plot(pcloud[vertex_set,0],pcloud[vertex_set,1],'k-') 
                 
 
-def union_find(connections):
+def union_find_pairs(connections):
     def find(x, parent):
         # Path compression
         if parent[x] != x:
@@ -195,6 +195,43 @@ def union_find(connections):
 
     return list(groups.values())
 
+def merge_subsets_union_find(C1, C2):
+    # Initialize the parent dictionary for union-find
+    parent = {}
+
+    def find(x):
+        # Path compression for efficiency
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x, y):
+        root_x = find(x)
+        root_y = find(y)
+        if root_x != root_y:
+            parent[root_y] = root_x
+
+    # Add all points and union within each subset
+    for subset in C1 + C2:
+        if subset:
+            first_point = subset[0]
+            if first_point not in parent:
+                parent[first_point] = first_point
+            for point in subset[1:]:
+                if point not in parent:
+                    parent[point] = point
+                union(first_point, point)
+
+    # Group points by their connected component
+    groups = {}
+    for point in parent:
+        root = find(point)
+        if root not in groups:
+            groups[root] = []
+        groups[root].append(point)
+
+    return list(groups.values())
+
 
 class NetworkDecompositions:
     def __init__(self, model):
@@ -207,7 +244,6 @@ class NetworkDecompositions:
         self.overlap_decomposition = []
         self.rank_decomposition = []
         self.polyhedral_decomposition = []
-        self.union_find = union_find
         
 
         
@@ -465,7 +501,8 @@ class NetworkDecompositions:
                                           outs[global_classes[m]]))
         return d+d.T
         
-    def find_overlapping_eq_classes(self, X, layer=-1, sensitivity=1e-6):
+    
+    def find_overlapping_eq_classes(self, X, layer=-1, sensitivity=1e-6,contractible_classes=[]):
         # if len(self.local_decomposition)==0:
         #     local_classes = self.compute_codeword_eq_classes(X,mode='local')[0][layer]
         # else:
@@ -477,21 +514,23 @@ class NetworkDecompositions:
             
         if len(self.polyhedral_decomposition)==0:
             self.polyhedral_decomposition = self.weights_to_inpolyhedra(X,layer = len(self.model.hidden_sizes))
-        all_classes = []
-        contractible_classes = []
         d_indexing = self.dmat_gdecomp(X, layer)
+        new_contract_classes = []
         for n, class_n in enumerate(global_classes):#class_partitions[i]):
-            all_classes.append(list(class_n))
             # glob_in_loc_A = np.where([set(class_n) <= set(loc_class) for loc_class in local_classes])[0]
             for m, class_m in enumerate(global_classes):#class_partitions[i]):
                 # glob_in_loc_B = np.where([set(class_m) <= set(loc_class) for loc_class in local_classes])[0]             
                 if n>m and d_indexing[n,m]<sensitivity:#glob_in_loc_A==glob_in_loc_B:
                     intersect = self.find_intersection(X[class_n],X[class_m],n,m,layer)
                     overlap_class = [[class_n[intersect[i,1]], class_m[intersect[i,0]]] for i in range(len(intersect))]
-                    all_classes.extend(overlap_class)
-                    contractible_classes.extend(overlap_class)
+                    new_contract_classes.extend(overlap_class)
         print('Done with layer '+str(layer))
-        return self.union_find(contractible_classes), all_classes
+        if len(contractible_classes)>0:
+            contractible_classes = merge_subsets_union_find(contractible_classes,
+                                                            union_find_pairs(new_contract_classes))
+        else:
+            contractible_classes = union_find_pairs(new_contract_classes)
+        return contractible_classes
     
     def find_intersection(self,C1,C2,n,m,layer=-1):
         A1,b1 = self.get_map_at_point(C1[0], layer)
@@ -580,7 +619,18 @@ class NetworkDecompositions:
     def compute_overlap_decomp(self,X,sensitivity = 1):
         overlap_decomps = []
         for n in range(len(self.model.hidden_sizes)+1):
-            overlap_decomps.append(self.find_overlapping_eq_classes(X,layer=n, sensitivity=sensitivity)[0])
+            if n == 0:
+                overlap_decomps.append(self.find_overlapping_eq_classes(
+                    X,layer=n,
+                    sensitivity=sensitivity,
+                    contractible_classes=[])
+                    )
+            else:
+                overlap_decomps.append(self.find_overlapping_eq_classes(
+                    X,layer=n,
+                    sensitivity=sensitivity,
+                    contractible_classes=overlap_decomps[-1])
+                    )
         self.overlap_decomposition = overlap_decomps
         return overlap_decomps
 
@@ -607,7 +657,6 @@ class MapHomology:
         self.neural_model = neural_model
         self.current_step = 0
         self.decomps = None
-        self.union_find = union_find
         
     def neural_net_to_map_step(self, x):
         #Requires a torch model with all the layers stored in a ModuleList
@@ -635,7 +684,7 @@ class MapHomology:
             np.fill_diagonal(d,np.nan)
             contract_mask = np.argwhere(d<self.gluing_threshold)
             contract_mask = [[contract_mask[i,0], contract_mask[i,1]] for i in range(len(contract_mask))]
-            contract_mask = self.union_find(contract_mask)
+            contract_mask = union_find_pairs(contract_mask)
         else:
             contract_mask = self.overlaps[self.current_step//2]
         return contract_mask

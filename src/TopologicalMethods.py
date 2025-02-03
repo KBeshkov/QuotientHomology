@@ -422,7 +422,7 @@ class PersistentHomology:
         ]
     
 
-    def homology_analysis(self, manifold, metric, dimred, *args, coeff=2):
+    def homology_analysis(self, manifold, metric, dimred, *args, coeff=2, thresh=np.inf):
         """
         Computes persistent homology
         -----------------------
@@ -438,12 +438,13 @@ class PersistentHomology:
             n_perm=args[0][1],
             do_cocycles=True,
             coeff=coeff,
+            thresh=thresh
         )
         diagram = birth_death_diagram["dgms"]
         cocycles = birth_death_diagram["cocycles"]
         return distance_matrix, diagram, cocycles
     
-    def homology_from_dmat(self, distance_matrix, normalized=True, *args, coeff=2):
+    def homology_from_dmat(self, distance_matrix, normalized=True, *args, coeff=2, thresh=np.inf):
         '''
         Computes persistent homology from a distance matrix
 
@@ -455,12 +456,13 @@ class PersistentHomology:
             n_perm=args[0][1],
             do_cocycles=True,
             coeff=coeff,
+            thresh=thresh
         )
         diagram = birth_death_diagram["dgms"]
         cocycles = birth_death_diagram["cocycles"]
         return [self.normalize(diagram) if normalized else birth_death_diagram, cocycles]
     
-    def relative_homology(self, manifold, submanifolds, metric, dimred, *args, coeff=2, quotient_metric='Iso'):
+    def relative_homology(self, manifold, submanifolds, metric, dimred, *args, coeff=2, quotient_metric='Iso',thresh=np.inf):
         """
         Computes relative persistent homology
         -----------------------
@@ -477,10 +479,8 @@ class PersistentHomology:
            
             
             if quotient_metric=='Iso': 
-                # Assuming the quotient space is the orbit of an isometry group see:
-                #https://math.stackexchange.com/questions/3117663/quotient-space-metric-with-nice-equivalence-classes?noredirect=1&lq=1
-                #and Theorem 2.1 https://www.degruyter.com/document/doi/10.1515/forum-2012-0152/html
-                # Also works if the quotient is a single connected set
+                # Uses the definition of quotient metric space, see:
+                #https://en.wikipedia.org/wiki/Metric_space#Quotient_metric_spaces
                 for point in range(len(manifold)):
                     distance_matrix[point,submanifold] = np.min(distance_matrix[point, submanifold])
                     distance_matrix[submanifold, point] = np.min(distance_matrix[submanifold, point])            
@@ -504,6 +504,7 @@ class PersistentHomology:
             n_perm=args[0][1],
             do_cocycles=True,
             coeff=coeff,
+            thresh=thresh
         )
         diagram = birth_death_diagram["dgms"]
         cocycles = birth_death_diagram["cocycles"]
