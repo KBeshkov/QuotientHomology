@@ -209,7 +209,7 @@ fig = plt.figure(figsize=(1.67,3))
 plt.errorbar(mean_ranks,np.arange(0,30),xerr=[std_ranks,upper_std],markersize=2,marker='s',color='black',ls='none')
 # plt.xlim(2.7,3.25)
 plt.yticks([])
-fig.savefig(f'../figures/ranks_{dataset}_model_{model_type}.png',dpi=300, transparent=True)
+#fig.savefig(f'../figures/ranks_{dataset}_model_{model_type}.png',dpi=300, transparent=True)
 #%%Compute relative homology groups
 phom_layerwise = [[[] for i in range(len(Hidden_layers[model_type])+1)] for j in range(n_models)]
 phom_layer_naitz = [[[] for i in range(len(Hidden_layers[model_type])+1)] for j in range(n_models)]
@@ -266,17 +266,21 @@ for i in range(n_models):
         Betti_numbers_naitz[i,j] = count_betti(phom_layer_naitz[i][j][0],epsilon,dim=betti_num)
 #%%
 average_betti = np.mean(Betti_numbers,0)
+up_betti = np.percentile(Betti_numbers, 75,axis=0)
+down_betti = np.percentile(Betti_numbers, 25, axis=0)
 std_betti = np.std(Betti_numbers,0)/2
 
 
 average_betti_naitz = np.mean(Betti_numbers_naitz,0)
+up_betti_naitz = np.percentile(Betti_numbers_naitz, 75,axis=0)
+down_betti_naitz = np.percentile(Betti_numbers_naitz, 25, axis=0)
 std_betti_naitz = np.std(Betti_numbers_naitz,0)/2
 
 plt.figure(figsize=(5,3))
 plt.plot(average_betti,'k-*')
 plt.plot(average_betti_naitz,'g-o')
-plt.legend(['Relative Homology', 'Naitzat et al. 2020'],  loc=3, prop={'size': 8})# plt.plot(Betti_numbers.T,'g',alpha=0.1)
-plt.fill_between(np.arange(0,10), average_betti+std_betti, 
+# plt.legend(['Relative Homology', 'Naitzat et al. 2020'],  loc=3, prop={'size': 8})# plt.plot(Betti_numbers.T,'g',alpha=0.1)
+plt.fill_between(np.arange(0,10), np.clip(average_betti+std_betti,0,9), 
                 average_betti-std_betti, color='black',alpha=0.1)
 plt.fill_between(np.arange(0,10), average_betti_naitz + std_betti_naitz, 
                 average_betti_naitz - std_betti_naitz, color='green',alpha=0.1)

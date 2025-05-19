@@ -365,25 +365,6 @@ class NetworkDecompositions:
         self.rank_decomposition = eq_classes
         return eq_classes, final_rankwords
     
-    def compute_overlap_classes(self, X, top_layer=-1, mode='global'):
-        final_codewords = np.empty([len(self.model.hidden_sizes)+1,len(X)], dtype=object)#.astype(np.int64)
-        for n in range(len(X)):
-            for i in range(len(self.hidden_sizes)+1):
-                final_codewords[i,n] = self.compute_codeword_at_point(X[n],top_layer=i+1,mode=mode)                    
-        _, inverse_indices = np.unique(final_codewords, return_inverse=True)
-        eq_classes = [[] for i in range(len(self.hidden_sizes)+1)]
-        for i in range(len(self.hidden_sizes)+1):
-            _, inverse_indices = np.unique(final_codewords[i], return_inverse=True)
-            for n in np.unique(inverse_indices):
-                entries = np.where(inverse_indices==n)[0]
-                if len(entries)>0:
-                    eq_classes[i].append(entries)
-        if mode=='global':
-            self.global_decomposition = [eq_classes, final_codewords]
-        elif mode=='local':
-            self.local_decomposition = [eq_classes, final_codewords]
-        return eq_classes, final_codewords
-    
     def init_bbox(self,bbox=[-10,10]):
         bbox_matrix = np.vstack([-np.eye(self.model.input_size),np.eye(self.model.input_size)])
         bbox_bias_lower = -np.array([[bbox[0]]*self.model.input_size])
@@ -397,7 +378,6 @@ class NetworkDecompositions:
         else:
             global_classes = self.global_decomposition[0]
         polyhedra = [[] for i in range(layer+1)]
-        maps = [[] for i in range(layer+1)]
         bbox_matrix, bbox_bias = self.init_bbox(bbox)
         
         for l in range(layer+1):
@@ -437,7 +417,7 @@ class NetworkDecompositions:
                 phedra = pc.reduce(phedra.intersect(phedra2))
         return phedra.A, phedra.b
     
-    def populate_polyhedra(self,H_rep, n_samples = 100):
+    def populate_polyhedra(self,H_rep, n_samples = 100, shrink_factor=1):
         min_coords = []
         max_coords = []
         for i in range(H_rep[0].shape[1]):
@@ -449,13 +429,14 @@ class NetworkDecompositions:
             
             min_coords.append(res_min.x[i])
             max_coords.append(res_max.x[i])
+            
 
         samples = []
 
         while len(samples) < n_samples:
             # Generate random point in bounding box
             point = np.array([
-                np.random.uniform(min_coords[j], max_coords[j]) 
+                shrink_factor*np.random.uniform(min_coords[j], max_coords[j]) 
                 for j in range(len(min_coords))
             ])
             if np.all(H_rep[0] @ point <= H_rep[1]):
@@ -501,7 +482,26 @@ class NetworkDecompositions:
                                           outs[global_classes[m]]))
         return d+d.T
         
+    def compute_overlap_classes(self, X, top_layer=-1, mode='global'):
+        final_codewords = np.empty([len(self.model.hidden_sizes)+1,len(X)], dtype=object)#.astype(np.int64)
+        for n in range(len(X)):
+            for i in range(len(self.hidden_sizes)+1):
+                final_codewords[i,n] = self.compute_codeword_at_point(X[n],top_layer=i+1,mode=mode)                    
+        _, inverse_indices = np.unique(final_codewords, return_inverse=True)
+        eq_classes = [[] for i in range(len(self.hidden_sizes)+1)]
+        for i in range(len(self.hidden_sizes)+1):
+            _, inverse_indices = np.unique(final_codewords[i], return_inverse=True)
+            for n in np.unique(inverse_indices):
+                entries = np.where(inverse_indices==n)[0]
+                if len(entries)>0:
+                    eq_classes[i].append(entries)
+        if mode=='global':
+            self.global_decomposition = [eq_classes, final_codewords]
+        elif mode=='local':
+            self.local_decomposition = [eq_classes, final_codewords]
+        return eq_classes, final_codewords
     
+
     def find_overlapping_eq_classes(self, X, layer=-1, sensitivity=1e-6,contractible_classes=[]):
         # if len(self.local_decomposition)==0:
         #     local_classes = self.compute_codeword_eq_classes(X,mode='local')[0][layer]
@@ -663,7 +663,7 @@ class MapHomology:
         if self.current_step==0:
             self.decomps = NetworkDecompositions(self.neural_model)
             self.overlaps = self.decomps.compute_overlap_decomp(x,sensitivity=self.gluing_threshold)
-        layers = self.neural_model.layers   
+        layers = self.neural_model.layers
         if self.current_step >= len(layers):
                 raise IndexError("Current step exceeds number of layers.")
         

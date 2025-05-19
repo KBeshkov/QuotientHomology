@@ -30,7 +30,7 @@ def optimize_nn(model, dat_loader, val_loader, optim, crit, num_epochs = 100):
 #%%
 #Test random knots
 n_samples = 500
-n_knots = 10
+n_knots = 1
 Mfld = ManifoldGenerator()
 Phom = PersistentHomology()
 rand_params = 2*(np.random.rand(n_knots,4)-1)
@@ -50,13 +50,13 @@ for i in range(n_knots):
 #%%
 criterion = nn.MSELoss()
 
-X_train = torch.linspace(-torch.pi,torch.pi,n_samples)#[:,None]#torch.Tensor(Mfld.S1(n_samples,1)).T#
-X_train = torch.vstack([X_train,0*X_train]).T
-X_test = torch.linspace(-torch.pi,torch.pi,2*n_samples)#torch.Tensor(Mfld.S1(n_samples,1)).T#
-X_test = torch.vstack([X_test,0*X_test]).T
+X_train = torch.linspace(-torch.pi,torch.pi,n_samples)[:,None]#torch.Tensor(Mfld.S1(n_samples,1)).T#
+# X_train = torch.vstack([X_train,0*X_train]).T
+X_test = torch.linspace(-torch.pi,torch.pi,2*n_samples)[:,None]#torch.Tensor(Mfld.S1(n_samples,1)).T#
+# X_test = torch.vstack([X_test,0*X_test]).T
 
 #%%
-hidden_sizes=[50]*3
+hidden_sizes=[8]*3
 out_knots = []
 decompositions = []
 homs = []
@@ -70,7 +70,7 @@ for i,knot in enumerate(random_knots):
     reg_data_val = TensorDataset(X_test, torch.Tensor(random_knots_test[i].T+1))
     valloader = torch.utils.data.DataLoader(reg_data_val, batch_size=1, shuffle=True)
     
-    model = FeedforwardNetwork(input_size=2,hidden_sizes=hidden_sizes,
+    model = FeedforwardNetwork(input_size=1,hidden_sizes=hidden_sizes,
                                    out_layer_sz=2, init_type='none',activation=nn.ReLU)
     
     optimizer = optim.Adam(model.parameters(), lr=0.0001)
@@ -80,7 +80,7 @@ for i,knot in enumerate(random_knots):
 
 
     decomposer = NetworkDecompositions(model)
-    decomps = decomposer.compute_overlap_decomp(X_test,sensitivity=1)
+    decomps = decomposer.compute_overlap_decomp(X_test,sensitivity=10000)
     decompositions.append(decomposer)
     
     d, diag, cycles = Phom.relative_homology(X_test, decomps[-1],pairwise_distances,False,[1,None])
@@ -150,4 +150,4 @@ for i in range(len(random_knots)):
 
 
 fig.tight_layout()
-fig.savefig(f'../figures/knots_many.pdf',dpi=500, transparent=True)
+# fig.savefig(f'../figures/knots_many.pdf',dpi=500, transparent=True)
