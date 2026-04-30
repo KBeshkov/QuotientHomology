@@ -1,7 +1,7 @@
 # Quotient Homology of Neural Network Representations
 
 ## Overview
-Repository for the paper **Quotient Homology of Neural Network Representations**. Using the fact that ReLU networks split the input space into convex regions and apply a piecewise linear map on each such region, the paper proves that topologically impactful transformations can be described by two sources. The first (**Rank source**) is related to the rank of each such map, whereas the second (**Overlap source**) is related to how the images of multiple regions intersect. When the intersections between the data manifold and the convex regions are convex, we prove that the homology of the network's representation is isomorphic to the quotient homology of the input with respect to $O_\Phi$ or,
+Repository for the paper **A Quotient Homology Theory of Representation Neural Networks**. Using the fact that ReLU networks split the input space into convex regions and apply a piecewise linear map on each such region, the paper proves that topologically impactful transformations can be described by two sources. The first (**Rank source**) is related to the rank of each such map, whereas the second (**Overlap source**) is related to how the images of multiple regions intersect. When the intersections between the data manifold and the convex regions are convex, we prove that the homology of the network's representation is isomorphic to the quotient homology of the input with respect to $O_\Phi$ or,
 
 $H_k(\Phi(M)) ≅ H_k(M / O_\Phi)$.
 
