@@ -1,8 +1,5 @@
 #Comparison to Naitzat results
-import sys
-sys.path.append("/Users/kosio/Repos/network-relative-homology/src/")
-from NetRelHom import *
-from TopologicalMethods import *
+from QuotientHomology import *
 from torch.utils.data import Dataset, TensorDataset
 import torch.optim as optim
 from tqdm import tqdm
@@ -48,10 +45,10 @@ Hidden_layers = {"D-I": [15]*9,
 n_models = 30
 
 #%%Optimization on disk dataset
-X_train = torch.Tensor(np.load("../data//D-I-train.npy"))
+X_train = torch.Tensor(np.load("../data/D-I-train.npy"))
 y_train = torch.Tensor(np.load("../data/D-I-train-labels.npy"))
 
-X_test = torch.Tensor(np.load("../data//D-I-test.npy"))
+X_test = torch.Tensor(np.load("../data/D-I-test.npy"))
 y_test = torch.Tensor(np.load("../data/D-I-test-labels.npy"))
 
 data_train = TensorDataset(X_train, y_train)
@@ -72,13 +69,13 @@ for n in range(n_models):
 
 
 #%%Optimiize on ring dataset
-X_train = torch.Tensor(np.load("../data//D-II-train.npy"))
+X_train = torch.Tensor(np.load("../data/D-II-train.npy"))
 labels = torch.Tensor(np.load("../data/D-II-train-labels.npy"))
 y_train = torch.zeros([len(labels),2])
 y_train[labels==0,0] = 1
 y_train[labels==1,1] = 1
 
-X_test = torch.Tensor(np.load("../data//D-II-test.npy"))
+X_test = torch.Tensor(np.load("../data/D-II-test.npy"))
 y_test = torch.Tensor(np.load("../data/D-II-test-labels.npy"))
 
 data_train = TensorDataset(X_train, y_train)
@@ -99,13 +96,13 @@ for n in range(n_models):
 #     torch.save(m.state_dict(), f"../models/D-II-2_model_{i+9}.pth")
 
 #%%Optimiize on sphere dataset
-X_train = torch.Tensor(np.load("../data//D-III-train.npy"))
+X_train = torch.Tensor(np.load("../data/D-III-train.npy"))
 labels = torch.Tensor(np.load("../data/D-III-train-labels.npy"))
 y_train = torch.zeros([len(labels),2])
 y_train[labels==0,0] = 1
 y_train[labels==1,1] = 1
 
-X_test = torch.Tensor(np.load("../data//D-III-test.npy"))
+X_test = torch.Tensor(np.load("../data/D-III-test.npy"))
 y_test = torch.Tensor(np.load("../data/D-III-test-labels.npy"))
 
 data_train = TensorDataset(X_train, y_train)

@@ -1,8 +1,5 @@
 #Train networks on multiple problems of increasing top complexity.
-import sys
-sys.path.append("/Users/kosio/Repos/network-relative-homology/src/")
-from NetRelHom import *
-from TopologicalMethods import *
+from QuotientHomology import *
 from torch.utils.data import Dataset, TensorDataset
 import torch.optim as optim
 from tqdm import tqdm
