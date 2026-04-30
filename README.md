@@ -5,7 +5,7 @@ Repository for the paper **A Quotient Homology Theory of Representation Neural N
 
 $H_k(\Phi(M)) ≅ H_k(M / O_\Phi)$.
 
-This separates *topological* simplification (captured by the quotient) from *geometric* distortion (captured by the metric), giving a clean picture of how deep networks gradually change input topology.
+This separates *topological* simplification (captured by the quotient) from *geometric* distortion (captured by the metric), giving a clean picture of how deep networks gradually change input topology. Several toy datasets as well as subsampled versions of the data from [Naitzat et al. (2020)](https://jmlr.org/papers/v21/20-098.html) are analyzed.
 
 ## Installation
 
