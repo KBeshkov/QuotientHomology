@@ -45,7 +45,7 @@ network-relative-homology/
 │   ├── top_propagation.py        # Trains the models on the Naitzat et al. data
 │   ├── num_overlap_test.py       # Overlap count and size for spheres of different dimension
 │   ├── knot_test.py              # Quotient homology on nonlinear curves
-│   ├── XOR_examples              # Plots of XOR examples
+│   ├── XOR_examples.py           # Plots of XOR examples
 ├── data/                         # Subsampled reproduction of the Naitzat et al. data
 ├── models/                       # Trained PyTorch model weights for all Naitzat et al. data
 └── pyproject.toml
