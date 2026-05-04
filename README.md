@@ -54,7 +54,7 @@ network-relative-homology/
 
 ## Example usage
 
-Analyses the polyhedral structure of a trained `FeedforwardNetwork`.
+Analyses the polyhedral structure of a `FeedforwardNetwork`.
 
 ```python
 from QuotientHomology import FeedforwardNetwork, NetworkDecompositions
